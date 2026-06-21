@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LaunchSim — 2D Rocket Launch Simulator</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Control panel -->
+      <aside id="controls">
+        <h1>🚀 LaunchSim</h1>
+        <p class="subtitle">2D gravity-turn launch to orbit</p>
+
+        <div id="sliders"><!-- range sliders injected by app.js --></div>
+
+        <div id="buttons">
+          <button id="launchBtn" class="primary">Launch</button>
+          <button id="pauseBtn" disabled>Pause</button>
+          <button id="resetBtn">Reset</button>
+        </div>
+
+        <div class="slider-row" id="warpRow">
+          <label>Time warp <span class="val" id="warpVal">10×</span></label>
+          <input type="range" id="warp" min="1" max="200" step="1" value="10" />
+        </div>
+        <button id="defaultsBtn" class="link">Restore default rocket</button>
+      </aside>
+
+      <!-- Flight view -->
+      <main id="view">
+        <canvas id="canvas"></canvas>
+        <div id="status" class="status">Ready for launch</div>
+      </main>
+
+      <!-- Telemetry -->
+      <aside id="telemetry">
+        <h2>Telemetry</h2>
+        <dl id="readouts"><!-- readouts injected by app.js --></dl>
+        <div id="orbitBadge" class="badge hidden">ORBIT ACHIEVED</div>
+      </aside>
+    </div>
+
+    <script src="physics.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

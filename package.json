@@ -1,0 +1,9 @@
+{
+  "name": "launchsim",
+  "version": "1.0.0",
+  "description": "2D rocket launch simulator with a browser UI",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}
