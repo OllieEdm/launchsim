@@ -13,7 +13,8 @@
   const Q_REF = 25000; // Pa — dynamic pressure that reads as "fully ablaze"
   const MAXQ_FLOOR = 5000; // Pa — minimum peak to announce a max-Q event
   const MAXQ_BANNER_MS = 3200; // how long the MAX Q callout stays up
-  const MAX_PARTICLES = 500;
+  const MAX_PARTICLES = 700;
+  const Q_OVERDRIVE = 3; // cap on how far past Q_REF the fire keeps escalating
 
   // --- Slider definitions ---------------------------------------------------
   const SLIDERS = [
@@ -74,12 +75,14 @@
     const row = document.createElement('div');
     row.className = 'slider-row';
     const label = document.createElement('label');
+    label.htmlFor = cfg.key; // associate the label with its control (a11y)
     const name = document.createElement('span');
     name.textContent = cfg.label;
     const val = document.createElement('span');
     val.className = 'val';
     label.append(name, val);
     const input = document.createElement('input');
+    input.id = cfg.key; // e.g. #thrust, #propMass — targetable by tests/automation
     input.type = 'range';
     input.min = cfg.min;
     input.max = cfg.max;
@@ -287,9 +290,18 @@
   }
 
   // --- Max-Q fire effect ----------------------------------------------------
-  // 0..1 heating intensity from the current dynamic pressure.
+  // Heating "level": 0 at the visibility floor, 1 at Q_REF, and >1 in the
+  // overdrive regime (very high dynamic pressure) so big rockets burn hotter.
+  function qLevel() {
+    return Math.max(0, (q - Q_MIN) / (Q_REF - Q_MIN));
+  }
+  // 0..1 base intensity (the clamped part of the ramp).
   function qIntensity() {
-    return Math.max(0, Math.min(1, (q - Q_MIN) / (Q_REF - Q_MIN)));
+    return Math.min(1, qLevel());
+  }
+  // 0..1 "white-hot" overdrive beyond Q_REF.
+  function qOverdrive() {
+    return Math.min(1, Math.max(0, (qLevel() - 1) / (Q_OVERDRIVE - 1)));
   }
 
   // Screen-space "backward" unit vector (opposite the rocket's heading).
@@ -301,13 +313,15 @@
     return [-dx, dy]; // world->screen flips y, then negate to point aft
   }
 
-  function spawnFireParticles(n, intensity) {
+  function spawnFireParticles(n, level) {
+    const f = Math.min(level, Q_OVERDRIVE); // 0..3 — hotter air, faster/bigger embers
+    const white = Math.min(1, Math.max(0, (level - 1) / (Q_OVERDRIVE - 1)));
     const [rx, ry] = toScreen(state.x, state.y);
     const [bx, by] = backwardScreenDir();
     const base = Math.atan2(by, bx);
     for (let i = 0; i < n; i++) {
       const ang = base + (Math.random() - 0.5) * 0.9; // aft, with spread
-      const spd = (35 + Math.random() * 95) * (0.5 + intensity);
+      const spd = (35 + Math.random() * 95) * (0.5 + f * 0.5);
       const life = 0.35 + Math.random() * 0.55;
       particles.push({
         x: rx + (Math.random() - 0.5) * 6,
@@ -316,8 +330,9 @@
         vy: Math.sin(ang) * spd,
         life,
         max: life,
-        size: 1.8 + Math.random() * 2.6 * (0.5 + intensity),
+        size: 1.8 + Math.random() * 2.6 * (0.5 + f * 0.5),
         hue: 52 - Math.random() * 46, // yellow -> deep orange/red
+        white, // pushes embers toward white-hot at extreme q
       });
     }
     if (particles.length > MAX_PARTICLES) {
@@ -326,15 +341,15 @@
   }
 
   function spawnFireBurst(n) {
-    spawnFireParticles(n, 1);
+    spawnFireParticles(n, Math.max(1, qLevel()));
   }
 
   function updateEffects(dt) {
-    const intensity = qIntensity();
+    const level = qLevel();
     // Emit while flying fast through the atmosphere.
-    if (running && !paused && intensity > 0 && P.altitude(state) < P.W.ATMO_TOP) {
-      const count = Math.round(intensity * 7 * Math.min(3, dt * 60));
-      if (count > 0) spawnFireParticles(count, intensity);
+    if (running && !paused && level > 0 && P.altitude(state) < P.W.ATMO_TOP) {
+      const count = Math.round(Math.min(level, Q_OVERDRIVE) * 7 * Math.min(3, dt * 60));
+      if (count > 0) spawnFireParticles(count, level);
     }
     // Advect and fade.
     for (let i = particles.length - 1; i >= 0; i--) {
@@ -350,15 +365,20 @@
 
   function drawFire() {
     const intensity = qIntensity();
+    const over = qOverdrive();
     const [rx, ry] = toScreen(state.x, state.y);
     ctx.globalCompositeOperation = 'lighter';
 
-    // Heat halo around the rocket, brightening with dynamic pressure.
+    // Heat halo: grows and shifts toward white as dynamic pressure climbs,
+    // and keeps escalating in the overdrive regime past Q_REF.
     if (intensity > 0.02) {
-      const rad = 14 + intensity * 30;
+      const rad = 14 + intensity * 26 + over * 44;
       const g = ctx.createRadialGradient(rx, ry, 0, rx, ry, rad);
-      const grn = Math.round(190 - 130 * intensity);
-      g.addColorStop(0, 'rgba(255,' + grn + ',60,' + (0.55 * intensity).toFixed(3) + ')');
+      const grn = Math.round(190 - 130 * intensity + over * 195); // orange -> white
+      const blu = Math.round(60 + over * 185);
+      const alpha = 0.5 * intensity + 0.3 * over;
+      g.addColorStop(0, 'rgba(255,' + Math.min(255, grn) + ',' + Math.min(255, blu) + ',' + alpha.toFixed(3) + ')');
+      g.addColorStop(0.5, 'rgba(255,' + Math.round(90 + over * 90) + ',30,' + (alpha * 0.5).toFixed(3) + ')');
       g.addColorStop(1, 'rgba(255,70,0,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
@@ -366,10 +386,11 @@
       ctx.fill();
     }
 
-    // Fire particles.
+    // Fire particles: lighten toward white-hot when the ember was born hot.
     for (const p of particles) {
       const a = Math.max(0, p.life / p.max);
-      ctx.fillStyle = 'hsla(' + p.hue.toFixed(0) + ',100%,58%,' + (a * 0.9).toFixed(3) + ')';
+      const light = Math.round(58 + (p.white || 0) * 37); // 58% -> 95%
+      ctx.fillStyle = 'hsla(' + p.hue.toFixed(0) + ',100%,' + light + '%,' + (a * 0.9).toFixed(3) + ')';
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size * (0.4 + a * 0.6), 0, Math.PI * 2);
       ctx.fill();
