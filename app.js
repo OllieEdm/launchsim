@@ -8,6 +8,13 @@
   const MAX_STEPS_PER_FRAME = 6000; // cap so high time-warp can't lock the tab
   const MAX_TRAIL = 9000;
 
+  // Dynamic-pressure ("max Q") fire effect tuning.
+  const Q_MIN = 3000; // Pa — below this there is no visible heating
+  const Q_REF = 25000; // Pa — dynamic pressure that reads as "fully ablaze"
+  const MAXQ_FLOOR = 5000; // Pa — minimum peak to announce a max-Q event
+  const MAXQ_BANNER_MS = 3200; // how long the MAX Q callout stays up
+  const MAX_PARTICLES = 500;
+
   // --- Slider definitions ---------------------------------------------------
   const SLIDERS = [
     { key: 'thrust', label: 'Thrust', min: 50000, max: 800000, step: 5000,
@@ -53,6 +60,13 @@
   let stars = [];
   let cam = freshCamera(state); // { cx, cy, span }
 
+  // Max-Q / aero-heating effect state.
+  let q = 0; // current dynamic pressure (Pa)
+  let maxQ = 0; // peak dynamic pressure so far (Pa)
+  let maxQPassed = false; // have we announced the max-Q event?
+  let maxQBannerUntil = -1; // real-time ms until which the MAX Q banner shows
+  let particles = []; // screen-space fire particles
+
   // --- Slider UI ------------------------------------------------------------
   const slidersEl = document.getElementById('sliders');
   const sliderEls = {};
@@ -96,8 +110,8 @@
   // --- Telemetry readouts ---------------------------------------------------
   const READOUTS = [
     'Phase', 'Mission time', 'Altitude', 'Speed', 'Vertical speed',
-    'Horizontal speed', 'Downrange', 'Acceleration', 'Mass', 'Fuel',
-    'Apoapsis', 'Periapsis',
+    'Horizontal speed', 'Downrange', 'Acceleration', 'Dyn. pressure', 'Mass',
+    'Fuel', 'Apoapsis', 'Periapsis',
   ];
   const readoutEls = {};
   READOUTS.forEach((name) => {
@@ -232,7 +246,8 @@
       ctx.stroke();
     }
 
-    // Rocket
+    // Aero-heating fire (behind the rocket), then the rocket on top.
+    drawFire();
     drawRocket(s);
   }
 
@@ -271,6 +286,98 @@
     ctx.restore();
   }
 
+  // --- Max-Q fire effect ----------------------------------------------------
+  // 0..1 heating intensity from the current dynamic pressure.
+  function qIntensity() {
+    return Math.max(0, Math.min(1, (q - Q_MIN) / (Q_REF - Q_MIN)));
+  }
+
+  // Screen-space "backward" unit vector (opposite the rocket's heading).
+  function backwardScreenDir() {
+    const speed = Math.hypot(state.vx, state.vy);
+    const r = Math.hypot(state.x, state.y) || 1;
+    const dx = speed > 1 ? state.vx / speed : state.x / r;
+    const dy = speed > 1 ? state.vy / speed : state.y / r;
+    return [-dx, dy]; // world->screen flips y, then negate to point aft
+  }
+
+  function spawnFireParticles(n, intensity) {
+    const [rx, ry] = toScreen(state.x, state.y);
+    const [bx, by] = backwardScreenDir();
+    const base = Math.atan2(by, bx);
+    for (let i = 0; i < n; i++) {
+      const ang = base + (Math.random() - 0.5) * 0.9; // aft, with spread
+      const spd = (35 + Math.random() * 95) * (0.5 + intensity);
+      const life = 0.35 + Math.random() * 0.55;
+      particles.push({
+        x: rx + (Math.random() - 0.5) * 6,
+        y: ry + (Math.random() - 0.5) * 6,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        life,
+        max: life,
+        size: 1.8 + Math.random() * 2.6 * (0.5 + intensity),
+        hue: 52 - Math.random() * 46, // yellow -> deep orange/red
+      });
+    }
+    if (particles.length > MAX_PARTICLES) {
+      particles.splice(0, particles.length - MAX_PARTICLES);
+    }
+  }
+
+  function spawnFireBurst(n) {
+    spawnFireParticles(n, 1);
+  }
+
+  function updateEffects(dt) {
+    const intensity = qIntensity();
+    // Emit while flying fast through the atmosphere.
+    if (running && !paused && intensity > 0 && P.altitude(state) < P.W.ATMO_TOP) {
+      const count = Math.round(intensity * 7 * Math.min(3, dt * 60));
+      if (count > 0) spawnFireParticles(count, intensity);
+    }
+    // Advect and fade.
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.94;
+      p.vy *= 0.94;
+      p.life -= dt;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function drawFire() {
+    const intensity = qIntensity();
+    const [rx, ry] = toScreen(state.x, state.y);
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Heat halo around the rocket, brightening with dynamic pressure.
+    if (intensity > 0.02) {
+      const rad = 14 + intensity * 30;
+      const g = ctx.createRadialGradient(rx, ry, 0, rx, ry, rad);
+      const grn = Math.round(190 - 130 * intensity);
+      g.addColorStop(0, 'rgba(255,' + grn + ',60,' + (0.55 * intensity).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(255,70,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(rx, ry, rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Fire particles.
+    for (const p of particles) {
+      const a = Math.max(0, p.life / p.max);
+      ctx.fillStyle = 'hsla(' + p.hue.toFixed(0) + ',100%,58%,' + (a * 0.9).toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * (0.4 + a * 0.6), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
   // --- Telemetry ------------------------------------------------------------
   function updateTelemetry() {
     const r = Math.hypot(state.x, state.y) || 1;
@@ -289,6 +396,9 @@
     readoutEls['Horizontal speed'].textContent = fmtSpeed(vt);
     readoutEls['Downrange'].textContent = fmtDist(downrange);
     readoutEls['Acceleration'].textContent = (state.accel / P.G0).toFixed(2) + ' g';
+    const qNow = P.dynamicPressure(state);
+    readoutEls['Dyn. pressure'].textContent =
+      (qNow / 1000).toFixed(1) + ' kPa' + (maxQ > MAXQ_FLOOR ? ' (max ' + (maxQ / 1000).toFixed(0) + ')' : '');
     readoutEls['Mass'].textContent = (state.mass / 1000).toFixed(2) + ' t';
     const fuelPct = params.propMass > 0 ? (state.fuel / params.propMass) * 100 : 0;
     readoutEls['Fuel'].textContent = fuelPct.toFixed(0) + ' %';
@@ -331,20 +441,38 @@
       while (acc >= SIM_DT && steps < MAX_STEPS_PER_FRAME) {
         state = P.step(state, params, SIM_DT);
         pushTrail();
+        trackMaxQ(now);
         acc -= SIM_DT;
         steps++;
         if (checkEnd() && !ended) break;
         if (state.landed) break;
       }
-      if (!ended && running) {
+      // Status line: the MAX Q callout takes priority while it is up.
+      if (running && now < maxQBannerUntil) {
+        statusEl.textContent = '🔥 MAX Q · ' + (maxQ / 1000).toFixed(0) + ' kPa';
+      } else if (!ended && running) {
         statusEl.textContent = state.phase;
       }
     }
 
     updateCamera();
+    updateEffects(dtReal);
     render();
     updateTelemetry();
     requestAnimationFrame(frame);
+  }
+
+  // Track dynamic pressure, detect the max-Q peak, and fire off the callout.
+  function trackMaxQ(now) {
+    q = P.dynamicPressure(state);
+    if (q > maxQ) {
+      maxQ = q;
+    } else if (!maxQPassed && maxQ > MAXQ_FLOOR && q < maxQ * 0.97 &&
+               P.altitude(state) < P.W.ATMO_TOP) {
+      maxQPassed = true;
+      maxQBannerUntil = now + MAXQ_BANNER_MS;
+      spawnFireBurst(60); // guarantee a visible flare even at high time warp
+    }
   }
 
   // --- Controls -------------------------------------------------------------
@@ -356,6 +484,7 @@
     paused = false;
     ended = false;
     cam = freshCamera(state);
+    resetEffects();
     badgeEl.classList.add('hidden');
     badgeEl.classList.remove('shown');
     launchBtn.disabled = true;
@@ -371,12 +500,21 @@
     state = P.initState(params);
     trail = [];
     cam = freshCamera(state);
+    resetEffects();
     badgeEl.classList.add('hidden');
     badgeEl.classList.remove('shown');
     launchBtn.disabled = false;
     pauseBtn.disabled = true;
     pauseBtn.textContent = 'Pause';
     statusEl.textContent = 'Ready for launch';
+  }
+
+  function resetEffects() {
+    q = 0;
+    maxQ = 0;
+    maxQPassed = false;
+    maxQBannerUntil = -1;
+    particles = [];
   }
 
   launchBtn.addEventListener('click', launch);

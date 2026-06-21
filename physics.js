@@ -64,6 +64,18 @@
     return Math.hypot(s.x, s.y) - R;
   }
 
+  // Air density at the rocket's current altitude (kg/m^3).
+  function density(s) {
+    const alt = altitude(s);
+    return alt < 0 ? RHO0 : RHO0 * Math.exp(-alt / H);
+  }
+
+  // Dynamic pressure q = 1/2 rho v^2 (Pa). Peaks during ascent ("max Q").
+  function dynamicPressure(s) {
+    const v2 = s.vx * s.vx + s.vy * s.vy;
+    return 0.5 * density(s) * v2;
+  }
+
   // Keplerian orbit summary relative to the planet.
   function orbitalElements(s) {
     const r = Math.hypot(s.x, s.y);
@@ -223,6 +235,8 @@
     step,
     guidance,
     altitude,
+    density,
+    dynamicPressure,
     orbitalElements,
     inOrbit,
   };

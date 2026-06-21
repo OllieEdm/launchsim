@@ -191,6 +191,37 @@ test('coasting orbit (no thrust, no drag) stays bounded in altitude', () => {
   assert.ok(maxAlt - minAlt < 5e3, `altitude band = ${(maxAlt - minAlt).toFixed(0)} m`);
 });
 
+// --- dynamic pressure (max Q) ----------------------------------------------
+
+test('dynamic pressure is zero at rest and follows 1/2 rho v^2 at sea level', () => {
+  assert.equal(P.dynamicPressure(makeState({ x: 0, y: R, vx: 0, vy: 0 })), 0);
+  const v = 100;
+  const q = P.dynamicPressure(makeState({ x: 0, y: R, vx: v, vy: 0 }));
+  assert.ok(Math.abs(q - 0.5 * P.W.RHO0 * v * v) < 1e-6, `q=${q}`);
+});
+
+test('air density falls off with altitude', () => {
+  const lo = P.density(makeState({ x: 0, y: R }));
+  const hi = P.density(makeState({ x: 0, y: R + 50e3 }));
+  assert.ok(hi < lo);
+  assert.ok(Math.abs(lo - P.W.RHO0) < 1e-9); // sea level
+});
+
+test('default flight has a max-Q peak inside the atmosphere', () => {
+  const p = P.defaultParams();
+  let s = P.initState(p);
+  let maxQ = 0;
+  let maxQAlt = 0;
+  for (let i = 0; i < 200000; i++) {
+    s = P.step(s, p, 0.05);
+    const q = P.dynamicPressure(s);
+    if (q > maxQ) { maxQ = q; maxQAlt = P.altitude(s); }
+    if (s.landed || P.altitude(s) > P.W.ATMO_TOP) break;
+  }
+  assert.ok(maxQ > 5000, `maxQ=${maxQ} Pa`); // a real aerodynamic peak
+  assert.ok(maxQAlt > 0 && maxQAlt < P.W.ATMO_TOP, `maxQ alt=${maxQAlt}`);
+});
+
 // --- end-to-end missions ---------------------------------------------------
 
 test('default rocket reaches a stable orbit with no NaNs', () => {

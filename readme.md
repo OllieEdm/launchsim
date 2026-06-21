@@ -29,6 +29,12 @@ Guidance is automatic in three phases:
 
 When the periapsis clears the atmosphere, you get **ORBIT ACHIEVED**.
 
+As the rocket accelerates through the lower atmosphere it builds **dynamic
+pressure** (`q = ½·ρ·v²`). The rocket glows and sheds fire that intensifies with
+`q`, flaring brightest at **max Q** — the moment of peak aerodynamic stress —
+which is also called out on the status line and shown in the telemetry. Crank up
+the thrust to push max Q higher and watch it burn.
+
 ## Controls
 
 | Slider | What it does |
